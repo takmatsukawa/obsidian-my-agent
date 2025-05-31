@@ -86,8 +86,6 @@ export default class MyAgentPlugin extends Plugin {
 			// Weekly Noteファイルを作成
 			await this.createWeeklyNoteFile(summary);
 			
-			new Notice('Weekly Noteを生成しました！');
-			
 		} catch (error) {
 			new Notice(`Weekly Note生成中にエラーが発生しました: ${error.message}`);
 		}
@@ -137,15 +135,17 @@ export default class MyAgentPlugin extends Plugin {
 			}
 		}
 		
-		const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-		if (existingFile instanceof TFile) {
-			new Notice(`Weekly Note ${fileName} は既に存在します。`);
-			return;
-		}
-		
 		const weeklyNoteContent = `${summary}`;
 		
-		await this.app.vault.create(filePath, weeklyNoteContent);
+		// ファイルが既に存在するかチェックして、存在する場合は上書き、存在しない場合は新規作成
+		const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+		if (existingFile instanceof TFile) {
+			await this.app.vault.modify(existingFile, weeklyNoteContent);
+			new Notice(`Weekly Note ${fileName} を更新しました！`);
+		} else {
+			await this.app.vault.create(filePath, weeklyNoteContent);
+			new Notice(`Weekly Note ${fileName} を作成しました！`);
+		}
 	}
 
 	private formatWeeklyNoteName(format: string, date: Date, weekNumber: number, year: number): string {
