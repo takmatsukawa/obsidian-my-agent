@@ -5,21 +5,6 @@ alwaysApply: true
 ---
 # Obsidian My Agent
 
-Obsidian My Agentは、Obsidianのカスタムプラグインです。
-自分専用のAIツールです。
+主な仕様はREADME.mdにまとめてある。
 
-## このプラグインが提供する機能
-
-### Command 1: "Generate daily notes summary"
-
-1週間分のdaily notesを読み込み、OpenAIのChatGPTに投げて要約してもらいます。
-現在のカーソルの位置に要約を挿入します。
-
-### 設定
-
-- OpenAI API Key: APIキー
-
-## 技術スタック
-
-- **AI API**: OpenAI API (GPT-4)
 
