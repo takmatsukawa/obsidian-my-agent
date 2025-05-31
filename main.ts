@@ -142,14 +142,12 @@ export default class MyAgentPlugin extends Plugin {
 			const date = new Date(today);
 			date.setDate(today.getDate() - i);
 			
-			const dateString = date.toISOString().split('T')[0]; // YYYY-MM-DD形式
 			const year = date.getFullYear().toString();
 			const month = String(date.getMonth() + 1).padStart(2, '0');
 			const day = String(date.getDate()).padStart(2, '0');
 			
 			// パスパターンを実際の日付に置換
 			const dailyNotePath = pathPattern
-				.replace('{date}', dateString)
 				.replace('{year}', year)
 				.replace('{month}', month)
 				.replace('{day}', day);
@@ -159,8 +157,11 @@ export default class MyAgentPlugin extends Plugin {
 			if (file instanceof TFile) {
 				const content = await this.app.vault.read(file);
 				if (content.trim()) {
+					// ファイル名から実際の日付を抽出
+					const actualDate = this.extractDateFromFilePath(file.path, folder, format);
+					
 					dailyNotes.push({
-						date: dateString,
+						date: actualDate || `${year}-${month}-${day}`, // フォールバック
 						content: content
 					});
 				}
@@ -170,13 +171,34 @@ export default class MyAgentPlugin extends Plugin {
 		return dailyNotes.reverse(); // 古い日付から新しい日付の順にソート
 	}
 
+	private extractDateFromFilePath(filePath: string, folder: string, format: string): string | null {
+		// ファイル名から拡張子を除去
+		let fileName = filePath.replace(/\.md$/, '');
+		
+		// フォルダがある場合は除去
+		if (folder) {
+			fileName = fileName.replace(`${folder}/`, '');
+		}
+		
+		// フォーマットに基づいて日付を抽出
+		if (format === 'YYYY-MM-DD') {
+			// YYYY-MM-DD形式の場合
+			const match = fileName.match(/(\d{4}-\d{2}-\d{2})/);
+			return match ? match[1] : null;
+		}
+		
+		// 他のフォーマットの場合は簡単な変換
+		// より複雑なフォーマットが必要な場合は拡張可能
+		return fileName;
+	}
+
 	private async generateSummaryWithOpenAI(content: string): Promise<string> {
 		const response = await this.openai!.chat.completions.create({
 			model: 'gpt-4',
 			messages: [
 				{
 					role: 'system',
-					content: `以下は1週間分のdaily notesです。内容を分析して、以下の形式で要約してください：
+					content: `1週間分のdaily notesを渡します。内容を分析して、以下の形式で要約してください:
 
 ## 1週間中の重大な出来事
 
@@ -188,7 +210,11 @@ export default class MyAgentPlugin extends Plugin {
 
 ## ネクストアクション
 
-各セクションに該当する内容がない場合は「特になし」と記載してください。日本語で回答してください。見出しの次の行は必ず改行してください。`
+
+- 各行の最後に、関連する日付への参照を [[2025-05-26]] のように記載してください。日付の参照と日付の参照の間にはスペースを入れてください。
+- 各セクションに該当する内容がない場合は「特になし」と記載してください。
+- 日本語で回答してください。
+- 見出しの次は必ず改行のみの行としてください。`
 				},
 				{
 					role: 'user',
