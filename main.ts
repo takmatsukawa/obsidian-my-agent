@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import { App, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 import OpenAI from 'openai';
 
 interface MyAgentSettings {
@@ -19,12 +19,11 @@ export default class MyAgentPlugin extends Plugin {
 		// OpenAI APIクライアントを初期化
 		this.initializeOpenAI();
 
-		// Daily Notes要約コマンドを追加
 		this.addCommand({
-			id: 'generate-daily-notes-summary',
-			name: 'Generate daily notes summary',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				this.generateDailyNotesSummary(editor);
+			id: 'generate-weekly-note',
+			name: 'Generate a weekly note',
+			callback: () => {
+				this.generateWeeklyNote();
 			}
 		});
 
@@ -57,7 +56,7 @@ export default class MyAgentPlugin extends Plugin {
 		}
 	}
 
-	private async generateDailyNotesSummary(editor: Editor) {
+	private async generateWeeklyNote() {
 		if (!this.openai) {
 			new Notice('OpenAI API Keyが設定されていません。設定タブで設定してください。');
 			return;
@@ -70,7 +69,7 @@ export default class MyAgentPlugin extends Plugin {
 			const dailyNotes = await this.getDailyNotesForLastWeek();
 			
 			if (dailyNotes.length === 0) {
-				new Notice('過去1週間のDaily Notesが見つかりませんでした。Daily notesプラグインが有効になっているか、またはMy Agentの設定でDaily Notesのパスパターンを手動設定してください。');
+				new Notice('過去1週間のDaily Notesが見つかりませんでした。Daily notesプラグインが有効になっているか確認してください。');
 				return;
 			}
 
@@ -84,14 +83,104 @@ export default class MyAgentPlugin extends Plugin {
 			// OpenAI APIで要約生成
 			const summary = await this.generateSummaryWithOpenAI(content);
 			
-			// カーソル位置に要約を挿入
-			editor.replaceSelection(summary);
-			
-			new Notice('要約を生成しました！');
+			// Weekly Noteファイルを作成
+			await this.createWeeklyNoteFile(summary);
 			
 		} catch (error) {
-			new Notice(`要約生成中にエラーが発生しました: ${error.message}`);
+			new Notice(`Weekly Note生成中にエラーが発生しました: ${error.message}`);
 		}
+	}
+
+	private getPeriodicNotesSettings() {
+		// Periodic Notesプラグインの設定を取得
+		const periodicNotesPlugin = (this.app as any).plugins?.plugins?.['periodic-notes'];
+		if (periodicNotesPlugin && periodicNotesPlugin.settings) {
+			return periodicNotesPlugin.settings;
+		}
+		return null;
+	}
+
+	private async createWeeklyNoteFile(summary: string) {
+		const periodicNotesSettings = this.getPeriodicNotesSettings();
+		
+		const now = new Date();
+		const weekNumber = this.getWeekNumber(now);
+		const year = now.getFullYear();
+		
+		// ファイル名を生成（Format設定を参照）
+		let fileName: string;
+		if (periodicNotesSettings && periodicNotesSettings.weekly && periodicNotesSettings.weekly.format) {
+			fileName = this.formatWeeklyNoteName(periodicNotesSettings.weekly.format, now, weekNumber, year);
+		} else {
+			// デフォルトフォーマット
+			fileName = `${year}-W${weekNumber.toString().padStart(2, '0')}`;
+		}
+		
+		// Periodic Notesの設定からフォルダを取得、なければデフォルトで Weekly フォルダを使用
+		let weeklyFolder = '';
+		if (periodicNotesSettings && periodicNotesSettings.weekly && periodicNotesSettings.weekly.folder) {
+			weeklyFolder = periodicNotesSettings.weekly.folder;
+		} else if (periodicNotesSettings && periodicNotesSettings.weekly && periodicNotesSettings.weekly.path) {
+			weeklyFolder = periodicNotesSettings.weekly.path;
+		} else {
+			weeklyFolder = 'Weekly'; // デフォルトフォルダ
+		}
+		
+		const filePath = weeklyFolder ? `${weeklyFolder}/${fileName}.md` : `${fileName}.md`;
+		
+		if (weeklyFolder) {
+			const folder = this.app.vault.getAbstractFileByPath(weeklyFolder);
+			if (!folder) {
+				await this.app.vault.createFolder(weeklyFolder);
+			}
+		}
+		
+		const weeklyNoteContent = `${summary}`;
+		
+		// ファイルが既に存在するかチェックして、存在する場合は上書き、存在しない場合は新規作成
+		const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+		if (existingFile instanceof TFile) {
+			await this.app.vault.modify(existingFile, weeklyNoteContent);
+			new Notice(`Weekly Note ${fileName} を更新しました！`);
+		} else {
+			await this.app.vault.create(filePath, weeklyNoteContent);
+			new Notice(`Weekly Note ${fileName} を作成しました！`);
+		}
+	}
+
+	private formatWeeklyNoteName(format: string, date: Date, weekNumber: number, year: number): string {
+		// Periodic Notesのフォーマット文字列を解析して実際の値に置換
+		let result = format;
+		
+		// リテラル文字列（[]で囲まれた部分）を一時的に保護
+		const literals: string[] = [];
+		result = result.replace(/\[([^\]]+)\]/g, (match, content) => {
+			literals.push(content);
+			return `__LITERAL_${literals.length - 1}__`;
+		});
+		
+		// フォーマット文字列を置換
+		result = result
+			.replace(/YYYY/g, year.toString())
+			.replace(/YY/g, year.toString().slice(-2))
+			.replace(/WW/g, weekNumber.toString().padStart(2, '0'))
+			.replace(/W/g, weekNumber.toString());
+		
+		// リテラル文字列を復元
+		literals.forEach((literal, index) => {
+			result = result.replace(`__LITERAL_${index}__`, literal);
+		});
+		
+		return result;
+	}
+
+	private getWeekNumber(date: Date): number {
+		// ISO 8601週番号を計算
+		const d = new Date(date.getTime());
+		d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+		const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+		const weekNumber = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+		return weekNumber;
 	}
 
 	private getDailyNotesSettings() {
@@ -246,7 +335,7 @@ class MyAgentSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('OpenAI API Key')
-			.setDesc('OpenAI APIキーを入力してください。ChatGPTでDaily Notesの要約を生成するために使用されます。')
+			.setDesc('OpenAI APIキーを入力してください。')
 			.addText(text => text
 				.setPlaceholder('sk-...')
 				.setValue(this.plugin.settings.openaiApiKey)
@@ -254,10 +343,5 @@ class MyAgentSettingTab extends PluginSettingTab {
 					this.plugin.settings.openaiApiKey = value;
 					await this.plugin.saveSettings();
 				}));
-		
-		containerEl.createEl('p', {
-			text: '使用方法: コマンドパレットから "Generate daily notes summary" を実行するか、エディタでコマンドを実行してください。',
-			cls: 'setting-item-description'
-		});
 	}
 }
