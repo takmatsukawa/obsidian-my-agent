@@ -103,14 +103,20 @@ export default class MyAgentPlugin extends Plugin {
 	}
 
 	private async createWeeklyNoteFile(summary: string) {
-		// Periodic Notesプラグインの設定を取得
 		const periodicNotesSettings = this.getPeriodicNotesSettings();
 		
-		// 週番号とファイル名を生成
 		const now = new Date();
 		const weekNumber = this.getWeekNumber(now);
 		const year = now.getFullYear();
-		const fileName = `${year}-W${weekNumber.toString().padStart(2, '0')}`;
+		
+		// ファイル名を生成（Format設定を参照）
+		let fileName: string;
+		if (periodicNotesSettings && periodicNotesSettings.weekly && periodicNotesSettings.weekly.format) {
+			fileName = this.formatWeeklyNoteName(periodicNotesSettings.weekly.format, now, weekNumber, year);
+		} else {
+			// デフォルトフォーマット
+			fileName = `${year}-W${weekNumber.toString().padStart(2, '0')}`;
+		}
 		
 		// Periodic Notesの設定からフォルダを取得、なければデフォルトで Weekly フォルダを使用
 		let weeklyFolder = '';
@@ -122,10 +128,8 @@ export default class MyAgentPlugin extends Plugin {
 			weeklyFolder = 'Weekly'; // デフォルトフォルダ
 		}
 		
-		// ファイルパスを構築
 		const filePath = weeklyFolder ? `${weeklyFolder}/${fileName}.md` : `${fileName}.md`;
 		
-		// フォルダが存在しない場合は作成
 		if (weeklyFolder) {
 			const folder = this.app.vault.getAbstractFileByPath(weeklyFolder);
 			if (!folder) {
@@ -133,18 +137,41 @@ export default class MyAgentPlugin extends Plugin {
 			}
 		}
 		
-		// ファイルが既に存在するかチェック
 		const existingFile = this.app.vault.getAbstractFileByPath(filePath);
 		if (existingFile instanceof TFile) {
 			new Notice(`Weekly Note ${fileName} は既に存在します。`);
 			return;
 		}
 		
-		// Weekly Noteの内容を構築
 		const weeklyNoteContent = `${summary}`;
 		
-		// ファイルを作成
 		await this.app.vault.create(filePath, weeklyNoteContent);
+	}
+
+	private formatWeeklyNoteName(format: string, date: Date, weekNumber: number, year: number): string {
+		// Periodic Notesのフォーマット文字列を解析して実際の値に置換
+		let result = format;
+		
+		// リテラル文字列（[]で囲まれた部分）を一時的に保護
+		const literals: string[] = [];
+		result = result.replace(/\[([^\]]+)\]/g, (match, content) => {
+			literals.push(content);
+			return `__LITERAL_${literals.length - 1}__`;
+		});
+		
+		// フォーマット文字列を置換
+		result = result
+			.replace(/YYYY/g, year.toString())
+			.replace(/YY/g, year.toString().slice(-2))
+			.replace(/WW/g, weekNumber.toString().padStart(2, '0'))
+			.replace(/W/g, weekNumber.toString());
+		
+		// リテラル文字列を復元
+		literals.forEach((literal, index) => {
+			result = result.replace(`__LITERAL_${index}__`, literal);
+		});
+		
+		return result;
 	}
 
 	private getWeekNumber(date: Date): number {
