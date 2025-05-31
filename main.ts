@@ -1,116 +1,200 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import OpenAI from 'openai';
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface MyAgentSettings {
+	openaiApiKey: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: MyAgentSettings = {
+	openaiApiKey: ''
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class MyAgentPlugin extends Plugin {
+	settings: MyAgentSettings;
+	private openai: OpenAI | null = null;
 
 	async onload() {
 		await this.loadSettings();
+		
+		// OpenAI APIクライアントを初期化
+		this.initializeOpenAI();
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
+		// Daily Notes要約コマンドを追加
 		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
+			id: 'generate-daily-notes-summary',
+			name: 'Generate daily notes summary',
 			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
+				this.generateDailyNotesSummary(editor);
 			}
 		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		// 設定タブを追加
+		this.addSettingTab(new MyAgentSettingTab(this.app, this));
 	}
 
 	onunload() {
-
+		// クリーンアップは特になし
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const loadedData = await this.loadData();
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+		this.initializeOpenAI();
+	}
+
+	private initializeOpenAI() {
+		if (this.settings.openaiApiKey && this.settings.openaiApiKey.trim() !== '') {
+			this.openai = new OpenAI({
+				apiKey: this.settings.openaiApiKey,
+				dangerouslyAllowBrowser: true
+			});
+		} else {
+			this.openai = null;
+		}
+	}
+
+	private async generateDailyNotesSummary(editor: Editor) {
+		if (!this.openai) {
+			new Notice('OpenAI API Keyが設定されていません。設定タブで設定してください。');
+			return;
+		}
+
+		try {
+			new Notice('Daily Notes を読み込み中...');
+			
+			// 1週間分のDaily Notesを取得
+			const dailyNotes = await this.getDailyNotesForLastWeek();
+			
+			if (dailyNotes.length === 0) {
+				new Notice('過去1週間のDaily Notesが見つかりませんでした。Daily notesプラグインが有効になっているか、またはMy Agentの設定でDaily Notesのパスパターンを手動設定してください。');
+				return;
+			}
+
+			new Notice('要約を生成中...');
+			
+			// OpenAI APIに送信する内容を準備
+			const content = dailyNotes.map(note => 
+				`# ${note.date}\n${note.content}`
+			).join('\n\n');
+
+			// OpenAI APIで要約生成
+			const summary = await this.generateSummaryWithOpenAI(content);
+			
+			// カーソル位置に要約を挿入
+			editor.replaceSelection(summary);
+			
+			new Notice('要約を生成しました！');
+			
+		} catch (error) {
+			new Notice(`要約生成中にエラーが発生しました: ${error.message}`);
+		}
+	}
+
+	private getDailyNotesSettings() {
+		// Daily notesプラグインの設定を取得
+		const dailyNotesPlugin = (this.app as any).plugins?.plugins?.['daily-notes'];
+		if (dailyNotesPlugin && dailyNotesPlugin.settings) {
+			return dailyNotesPlugin.settings;
+		}
+
+		// もしくは、Core Daily notesの設定を確認
+		const corePlugins = (this.app as any).internalPlugins;
+		const coreDailyNotes = corePlugins?.plugins?.['daily-notes'];
+		if (coreDailyNotes && coreDailyNotes.instance?.options) {
+			return coreDailyNotes.instance.options;
+		}
+
+		return null;
+	}
+
+	private async getDailyNotesForLastWeek(): Promise<Array<{date: string, content: string}>> {
+		const dailyNotes: Array<{date: string, content: string}> = [];
+		const today = new Date();
+		
+		// Daily notesプラグインの設定を取得
+		const dailyNotesSettings = this.getDailyNotesSettings();
+		
+		if (!dailyNotesSettings) {
+			new Notice('Daily notesプラグインの設定が見つかりません。Daily notesプラグインが有効になっているか確認してください。');
+			return [];
+		}
+
+		// Daily notesプラグインの設定からパスを取得
+		const folder = dailyNotesSettings.folder || '';
+		const format = dailyNotesSettings.format || 'YYYY-MM-DD';
+		
+		// フォーマットをパスパターンに変換
+		const dateFormat = format
+			.replace('YYYY', '{year}')
+			.replace('MM', '{month}')
+			.replace('DD', '{day}')
+			.replace('MMMM', '{monthName}')
+			.replace('MMM', '{monthShort}');
+		
+		const pathPattern = folder ? `${folder}/${dateFormat}.md` : `${dateFormat}.md`;
+		
+		// 過去7日間の日付を生成
+		for (let i = 0; i < 7; i++) {
+			const date = new Date(today);
+			date.setDate(today.getDate() - i);
+			
+			const dateString = date.toISOString().split('T')[0]; // YYYY-MM-DD形式
+			const year = date.getFullYear().toString();
+			const month = String(date.getMonth() + 1).padStart(2, '0');
+			const day = String(date.getDate()).padStart(2, '0');
+			
+			// パスパターンを実際の日付に置換
+			const dailyNotePath = pathPattern
+				.replace('{date}', dateString)
+				.replace('{year}', year)
+				.replace('{month}', month)
+				.replace('{day}', day);
+			
+			// Daily notesファイルを検索して読み込み
+			const file = this.app.vault.getAbstractFileByPath(dailyNotePath);
+			if (file instanceof TFile) {
+				const content = await this.app.vault.read(file);
+				if (content.trim()) {
+					dailyNotes.push({
+						date: dateString,
+						content: content
+					});
+				}
+			}
+		}
+		
+		return dailyNotes.reverse(); // 古い日付から新しい日付の順にソート
+	}
+
+	private async generateSummaryWithOpenAI(content: string): Promise<string> {
+		const response = await this.openai!.chat.completions.create({
+			model: 'gpt-4',
+			messages: [
+				{
+					role: 'system',
+					content: '以下は1週間分のdaily notesです。主要な出来事、達成したこと、感情の変化、学んだことなどを要約して、見やすい形でまとめてください。日本語で回答してください。'
+				},
+				{
+					role: 'user',
+					content: content
+				}
+			],
+			max_tokens: 1000,
+			temperature: 0.7,
+		});
+
+		return response.choices[0]?.message?.content || '要約を生成できませんでした。';
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+class MyAgentSettingTab extends PluginSettingTab {
+	plugin: MyAgentPlugin;
 
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: MyAgentPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -120,15 +204,22 @@ class SampleSettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
+		containerEl.createEl('h2', {text: 'My Agent Settings'});
+
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
+			.setName('OpenAI API Key')
+			.setDesc('OpenAI APIキーを入力してください。ChatGPTでDaily Notesの要約を生成するために使用されます。')
 			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
+				.setPlaceholder('sk-...')
+				.setValue(this.plugin.settings.openaiApiKey)
 				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+					this.plugin.settings.openaiApiKey = value;
 					await this.plugin.saveSettings();
 				}));
+		
+		containerEl.createEl('p', {
+			text: '使用方法: コマンドパレットから "Generate daily notes summary" を実行するか、エディタでコマンドを実行してください。',
+			cls: 'setting-item-description'
+		});
 	}
 }

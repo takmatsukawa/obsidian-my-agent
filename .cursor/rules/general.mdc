@@ -15,6 +15,10 @@ Obsidian My Agentは、Obsidianのカスタムプラグインです。
 1週間分のdaily notesを読み込み、OpenAIのChatGPTに投げて要約してもらいます。
 現在のカーソルの位置に要約を挿入します。
 
+### 設定
+
+- OpenAI API Key: APIキー
+
 ## 技術スタック
 
 - **AI API**: OpenAI API (GPT-4)
