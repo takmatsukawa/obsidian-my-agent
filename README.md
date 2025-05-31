@@ -1,6 +1,6 @@
 # Obsidian My Agent
 
-This is a Obsidian plugin that is designed to support my own Obsidian life with the power of AI.
+This is an Obsidian plugin that is designed to support my own Obsidian life with the power of AI.
 
 ## Features
 
