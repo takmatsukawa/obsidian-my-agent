@@ -3,10 +3,12 @@ import OpenAI from 'openai';
 
 interface MyAgentSettings {
 	openaiApiKey: string;
+	ignoreFilePatterns: string[];
 }
 
 const DEFAULT_SETTINGS: MyAgentSettings = {
-	openaiApiKey: ''
+	openaiApiKey: '',
+	ignoreFilePatterns: []
 }
 
 export default class MyAgentPlugin extends Plugin {
@@ -58,22 +60,27 @@ export default class MyAgentPlugin extends Plugin {
 
 	private async generateWeeklyNote() {
 		if (!this.openai) {
-			new Notice('OpenAI API Keyが設定されていません。設定タブで設定してください。');
+			new Notice('OpenAI API Key is not configured. Please set it in the settings tab.');
 			return;
 		}
 
 		try {
-			new Notice('Daily Notes を読み込み中...');
+			new Notice('Loading Daily Notes...');
 			
 			// 1週間分のDaily Notesを取得
 			const dailyNotes = await this.getDailyNotesForLastWeek();
 			
 			if (dailyNotes.length === 0) {
-				new Notice('過去1週間のDaily Notesが見つかりませんでした。Daily notesプラグインが有効になっているか確認してください。');
+				new Notice('No Daily Notes found for the past week. Please check if the Daily Notes plugin is enabled and configured.');
 				return;
 			}
 
-			new Notice('要約を生成中...');
+			new Notice('Searching for updated files...');
+			
+			// 過去1週間に更新されたファイルを取得
+			const updatedFiles = await this.getUpdatedFilesForLastWeek();
+
+			new Notice('Generating summary...');
 			
 			// OpenAI APIに送信する内容を準備
 			const content = dailyNotes.map(note => 
@@ -83,11 +90,11 @@ export default class MyAgentPlugin extends Plugin {
 			// OpenAI APIで要約生成
 			const summary = await this.generateSummaryWithOpenAI(content);
 			
-			// Weekly Noteファイルを作成
-			await this.createWeeklyNoteFile(summary);
+			// Weekly Noteファイルを作成（要約と更新されたファイルリストを含む）
+			await this.createWeeklyNoteFile(summary, updatedFiles);
 			
 		} catch (error) {
-			new Notice(`Weekly Note生成中にエラーが発生しました: ${error.message}`);
+			new Notice(`Error occurred while generating Weekly Note: ${error.message}`);
 		}
 	}
 
@@ -100,7 +107,7 @@ export default class MyAgentPlugin extends Plugin {
 		return null;
 	}
 
-	private async createWeeklyNoteFile(summary: string) {
+	private async createWeeklyNoteFile(summary: string, updatedFiles: Array<{path: string, name: string, modifiedDate: string}>) {
 		const periodicNotesSettings = this.getPeriodicNotesSettings();
 		
 		const now = new Date();
@@ -135,16 +142,27 @@ export default class MyAgentPlugin extends Plugin {
 			}
 		}
 		
-		const weeklyNoteContent = `${summary}`;
+		// 更新されたファイルのリストを生成
+		let updatedFilesSection = '';
+		if (updatedFiles.length > 0) {
+			updatedFilesSection = '\n\n## Files Updated This Week\n\n';
+			updatedFiles.forEach(file => {
+				updatedFilesSection += `- [[${file.name}]] (${file.modifiedDate})\n`;
+			});
+		} else {
+			updatedFilesSection = '\n\n## Files Updated This Week\n\nNone\n';
+		}
+		
+		const weeklyNoteContent = `${summary}${updatedFilesSection}`;
 		
 		// ファイルが既に存在するかチェックして、存在する場合は上書き、存在しない場合は新規作成
 		const existingFile = this.app.vault.getAbstractFileByPath(filePath);
 		if (existingFile instanceof TFile) {
 			await this.app.vault.modify(existingFile, weeklyNoteContent);
-			new Notice(`Weekly Note ${fileName} を更新しました！`);
+			new Notice(`Weekly Note ${fileName} updated!`);
 		} else {
 			await this.app.vault.create(filePath, weeklyNoteContent);
-			new Notice(`Weekly Note ${fileName} を作成しました！`);
+			new Notice(`Weekly Note ${fileName} created!`);
 		}
 	}
 
@@ -208,7 +226,7 @@ export default class MyAgentPlugin extends Plugin {
 		const dailyNotesSettings = this.getDailyNotesSettings();
 		
 		if (!dailyNotesSettings) {
-			new Notice('Daily notesプラグインの設定が見つかりません。Daily notesプラグインが有効になっているか確認してください。');
+			new Notice('Daily Notes plugin settings not found. Please check if the Daily Notes plugin is enabled and configured.');
 			return [];
 		}
 
@@ -316,6 +334,85 @@ export default class MyAgentPlugin extends Plugin {
 
 		return response.choices[0]?.message?.content || '要約を生成できませんでした。';
 	}
+
+	private async getUpdatedFilesForLastWeek(): Promise<Array<{path: string, name: string, modifiedDate: string}>> {
+		const updatedFiles: Array<{path: string, name: string, modifiedDate: string}> = [];
+		const oneWeekAgo = new Date();
+		oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+		
+		// Vaultの全ファイルを取得
+		const allFiles = this.app.vault.getMarkdownFiles();
+		
+		for (const file of allFiles) {
+			// ファイルの最終更新日時を取得
+			const stat = await this.app.vault.adapter.stat(file.path);
+			if (stat && stat.mtime > oneWeekAgo.getTime()) {
+				// Daily Notesフォルダのファイルは除外（Daily Notesは別途処理済み）
+				const dailyNotesSettings = this.getDailyNotesSettings();
+				const dailyNotesFolder = dailyNotesSettings?.folder || '';
+				
+				// Weekly Notesフォルダのファイルも除外
+				const periodicNotesSettings = this.getPeriodicNotesSettings();
+				let weeklyFolder = '';
+				if (periodicNotesSettings && periodicNotesSettings.weekly && periodicNotesSettings.weekly.folder) {
+					weeklyFolder = periodicNotesSettings.weekly.folder;
+				} else if (periodicNotesSettings && periodicNotesSettings.weekly && periodicNotesSettings.weekly.path) {
+					weeklyFolder = periodicNotesSettings.weekly.path;
+				} else {
+					weeklyFolder = 'Weekly';
+				}
+				
+				// Daily NotesフォルダとWeekly Notesフォルダのファイルを除外
+				const shouldExclude = (dailyNotesFolder && file.path.startsWith(dailyNotesFolder + '/')) ||
+									 (weeklyFolder && file.path.startsWith(weeklyFolder + '/'));
+				
+				// 無視ファイルパターンをチェック
+				const shouldIgnore = this.shouldIgnoreFile(file.path);
+				
+				if (!shouldExclude && !shouldIgnore) {
+					const modifiedDate = new Date(stat.mtime).toLocaleDateString('ja-JP');
+					const fileName = file.basename; // 拡張子なしのファイル名
+					
+					updatedFiles.push({
+						path: file.path,
+						name: fileName,
+						modifiedDate: modifiedDate
+					});
+				}
+			}
+		}
+		
+		// 更新日時でソート（新しい順）
+		updatedFiles.sort((a, b) => {
+			const dateA = new Date(a.modifiedDate).getTime();
+			const dateB = new Date(b.modifiedDate).getTime();
+			return dateB - dateA;
+		});
+		
+		return updatedFiles;
+	}
+
+	private shouldIgnoreFile(filePath: string): boolean {
+		// 設定で指定された無視パターンをチェック
+		for (const pattern of this.settings.ignoreFilePatterns) {
+			if (this.matchesPattern(filePath, pattern)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private matchesPattern(filePath: string, pattern: string): boolean {
+		// シンプルなglobパターンマッチング
+		// ** は任意の深さのディレクトリ、* は任意の文字列
+		const regexPattern = pattern
+			.replace(/\*\*/g, '.*')  // ** を .* に変換
+			.replace(/\*/g, '[^/]*') // * を [^/]* に変換（スラッシュ以外の任意の文字）
+			.replace(/\./g, '\\.');  // . をエスケープ
+		
+		const regex = new RegExp(`^${regexPattern}$`);
+		return regex.test(filePath);
+	}
 }
 
 class MyAgentSettingTab extends PluginSettingTab {
@@ -335,13 +432,53 @@ class MyAgentSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('OpenAI API Key')
-			.setDesc('OpenAI APIキーを入力してください。')
+			.setDesc('Enter your OpenAI API key.')
 			.addText(text => text
 				.setPlaceholder('sk-...')
 				.setValue(this.plugin.settings.openaiApiKey)
 				.onChange(async (value) => {
 					this.plugin.settings.openaiApiKey = value;
 					await this.plugin.saveSettings();
+				}));
+
+		// 無視ファイルパターンの設定
+		containerEl.createEl('h3', {text: 'Ignore File Patterns'});
+		containerEl.createEl('p', {
+			text: 'Specify file patterns to ignore when generating Weekly Notes. Glob patterns (*, **) are supported.',
+			cls: 'setting-item-description'
+		});
+
+		// 既存のパターンを表示・編集
+		this.plugin.settings.ignoreFilePatterns.forEach((pattern, index) => {
+			new Setting(containerEl)
+				.setName(`Pattern ${index + 1}`)
+				.addText(text => text
+					.setPlaceholder('e.g., .obsidian/**')
+					.setValue(pattern)
+					.onChange(async (value) => {
+						this.plugin.settings.ignoreFilePatterns[index] = value;
+						await this.plugin.saveSettings();
+					}))
+				.addButton(button => button
+					.setButtonText('Delete')
+					.setClass('mod-warning')
+					.onClick(async () => {
+						this.plugin.settings.ignoreFilePatterns.splice(index, 1);
+						await this.plugin.saveSettings();
+						this.display(); // 設定画面を再描画
+					}));
+		});
+
+		// 新しいパターンを追加するボタン
+		new Setting(containerEl)
+			.setName('Add New Pattern')
+			.addButton(button => button
+				.setButtonText('Add')
+				.setClass('mod-cta')
+				.onClick(async () => {
+					this.plugin.settings.ignoreFilePatterns.push('');
+					await this.plugin.saveSettings();
+					this.display(); // 設定画面を再描画
 				}));
 	}
 }

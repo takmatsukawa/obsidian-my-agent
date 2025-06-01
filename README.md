@@ -9,7 +9,8 @@ This is an Obsidian plugin that is designed to support my own Obsidian life with
 This command executes the following steps:
 
 1. Read 1 week of daily notes, send them to OpenAI's ChatGPT, and summarize them.
-2. Generate a new weekly note with the summary and save it to the specified folder.
+2. List all updated notes in the week.
+2. Generate a new weekly note with the summary and the list, and save it to the specified folder.
 
 #### Requirements
 
@@ -19,3 +20,7 @@ This command executes the following steps:
 ### Settings
 
 - OpenAI API Key: API key for ChatGPT integration
+- Ignore File Patterns: File patterns to exclude from the updated files list when generating weekly notes
+  - Supports glob patterns (*, **)
+  - Examples:
+    - `Templates/*` - Ignore files in Templates folder
