@@ -20,3 +20,7 @@ This command executes the following steps:
 ### Settings
 
 - OpenAI API Key: API key for ChatGPT integration
+- Ignore File Patterns: File patterns to exclude from the updated files list when generating weekly notes
+  - Supports glob patterns (*, **)
+  - Examples:
+    - `Templates/*` - Ignore files in Templates folder
