@@ -73,18 +73,38 @@ export default class MyAgentPlugin extends Plugin {
 				return;
 			}
 
-			new Notice('要約を生成中...');
+			new Notice('Daily Notes要約を生成中...');
 			
 			// OpenAI APIに送信する内容を準備
-			const content = dailyNotes.map(note => 
+			const dailyNotesContent = dailyNotes.map(note => 
 				`# ${note.date}\n${note.content}`
 			).join('\n\n');
 
 			// OpenAI APIで要約生成
-			const summary = await this.generateSummaryWithOpenAI(content);
+			const summary = await this.generateSummaryWithOpenAI(dailyNotesContent);
+			
+			new Notice('更新ノートを読み込み中...');
+			
+			// 1週間分の更新ノートを取得
+			const updatedNotes = await this.getUpdatedNotesForLastWeek();
+			
+			let analysis = '';
+			if (updatedNotes.length > 0) {
+				new Notice('更新ノート分析を生成中...');
+				
+				const updatedNotesContent = updatedNotes.map(note => 
+					`# ${note.title}\n更新日: ${note.lastModified}\n\n${note.content}`
+				).join('\n\n---\n\n');
+				
+				// OpenAI APIで分析生成
+				analysis = await this.analyzeUpdatedNotesWithOpenAI(updatedNotesContent);
+			} else {
+				analysis = '今週は更新されたノートがありませんでした。';
+			}
 			
 			// Weekly Noteファイルを作成
-			await this.createWeeklyNoteFile(summary);
+			const combinedContent = `${summary}\n\n---\n\n# 更新ノート分析\n\n${analysis}`;
+			await this.createWeeklyNoteFile(combinedContent);
 			
 		} catch (error) {
 			new Notice(`Weekly Note生成中にエラーが発生しました: ${error.message}`);
@@ -315,6 +335,100 @@ export default class MyAgentPlugin extends Plugin {
 		});
 
 		return response.choices[0]?.message?.content || '要約を生成できませんでした。';
+	}
+
+	private async getUpdatedNotesForLastWeek(): Promise<Array<{title: string, lastModified: string, content: string}>> {
+		const updatedNotes: Array<{title: string, lastModified: string, content: string}> = [];
+		const oneWeekAgo = new Date();
+		oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+		
+		// すべてのマークダウンファイルを取得
+		const allFiles = this.app.vault.getMarkdownFiles();
+		
+		// Daily notesフォルダを除外するための設定取得
+		const dailyNotesSettings = this.getDailyNotesSettings();
+		const dailyNotesFolder = dailyNotesSettings?.folder || '';
+		
+		// Weeklyフォルダも除外
+		const periodicNotesSettings = this.getPeriodicNotesSettings();
+		const weeklyFolder = periodicNotesSettings?.weekly?.folder || 
+			periodicNotesSettings?.weekly?.path || 'Weekly';
+		
+		for (const file of allFiles) {
+			// Daily notesとWeekly notesを除外
+			if (dailyNotesFolder && file.path.startsWith(dailyNotesFolder + '/')) {
+				continue;
+			}
+			if (file.path.startsWith(weeklyFolder + '/')) {
+				continue;
+			}
+			
+			// 1週間以内に更新されたファイルのみを対象
+			if (file.stat.mtime > oneWeekAgo.getTime()) {
+				try {
+					const content = await this.app.vault.read(file);
+					if (content.trim()) {
+						const lastModifiedDate = new Date(file.stat.mtime).toLocaleDateString('ja-JP');
+						updatedNotes.push({
+							title: file.basename,
+							lastModified: lastModifiedDate,
+							content: content
+						});
+					}
+				} catch (error) {
+					// ファイル読み込みエラーは無視
+					continue;
+				}
+			}
+		}
+		
+		// 更新日時順にソート
+		return updatedNotes.sort((a, b) => a.lastModified.localeCompare(b.lastModified));
+	}
+
+	private async analyzeUpdatedNotesWithOpenAI(content: string): Promise<string> {
+		const response = await this.openai!.chat.completions.create({
+			model: 'gpt-4',
+			messages: [
+				{
+					role: 'system',
+					content: `1週間分の更新されたノートを渡します。内容を分析して、以下の観点で分析結果を返してください:
+
+## この人は何に興味がある人なのか
+
+この人が書いているノートの内容から、どのような分野や話題に興味を持っているのかを分析してください。単に書かれている内容を列挙するのではなく、興味の背景にある動機や価値観まで踏み込んで分析してください。
+
+## 思考の癖
+
+この人の考え方や思考パターンの特徴を分析してください。例えば：
+- 物事をどのような視点で捉える傾向があるか
+- 論理的思考vs直感的思考の傾向
+- 抽象的思考vs具体的思考の傾向
+- 問題解決のアプローチの特徴
+- 情報をどのように整理・構造化する傾向があるか
+
+## 実はこの人自身では気づいていなさそうなこと
+
+ノートの内容から読み取れる、書いた本人が意識していない可能性のある特徴や傾向を分析してください。例えば：
+- 無意識に重視している価値観
+- 隠れた才能や強み
+- 行動パターンの背景にある心理的要因
+- 成長の機会や可能性
+- 自分では当たり前だと思っているが実は特徴的なこと
+
+分析は具体的で洞察に富んだものにし、ノートの内容を根拠として示してください。
+日本語で回答してください。各セクションに該当する内容がない場合は「十分な情報がありません」と記載してください。`
+				},
+				{
+					role: 'user',
+					content: content
+				}
+			],
+			max_tokens: 1500,
+			temperature: 0.7,
+		});
+
+		return response.choices[0]?.message?.content || '分析を生成できませんでした。';
 	}
 }
 
